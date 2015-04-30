@@ -2,11 +2,12 @@ from pgmpy.models import JunctionTree
 from pgmpy.models import BayesianModel
 from pgmpy.factors.Factor import factor_product
 from pgmpy.inference import Inference
+from pgmpy.inference import LazyPropagation
 from pgmpy.inference import EliminationOrdering
 from mti.MarginalTree import MarginalTree
 
 
-class MarginalTreeInference(Inference):
+class MarginalTreeInference(LazyPropagation):
 
     def __init__(self, model):
         super().__init__(model)
@@ -40,7 +41,7 @@ class MarginalTreeInference(Inference):
         # Dealing with evidence. Reducing factors over it before VE is run.
         if evidence:
             for evidence_var in evidence:
-                for factor in working_factors[evidence_var]:
+                for factor in working_factors[evidence_var].copy():
                     factor_reduced = factor.reduce(
                         '{evidence_var}_{state}'
                         .format(evidence_var=evidence_var,
@@ -101,16 +102,17 @@ class MarginalTreeInference(Inference):
                 node = node.union(f.scope())
             node = tuple(node)
             marginal_tree.add_node(node)
-            marginal_tree.add_factors_to_node(factors, node)
-            # Connect nodes
             messages_intersection = set(factors).intersection(set(messages))
+            marginal_tree.add_factors_to_node(
+                list(set(factors)-messages_intersection), node)
+            # Connect nodes
             messages_used = []
             for m in list(messages_intersection):
                 for edge in marginal_tree.separators.copy():
                     if m in marginal_tree.separators[edge]:
                         marginal_tree.add_edge(edge[0], node)
-                        new_edge = (edge[0], node)
-                        marginal_tree.add_messages_to_separator(m, new_edge)
+                        separator = (edge[0], node)
+                        marginal_tree.add_messages_to_separator(m, separator)
                         del marginal_tree.separators[edge]
                         messages_used.append(m)
             # If message wasn't used to create the new message,
@@ -124,9 +126,9 @@ class MarginalTreeInference(Inference):
             remaining_factors.extend([factor for factor in working_factors[var]
                                       if (not set(
                                           factor.variables
-                                          ).intersection(
+                                      ).intersection(
                                           eliminated_variables)
-                                          ) and var in factor.left_hand_side])
+            ) and var in factor.left_hand_side])
         # Adding the query node and the last message to it.
         marginal_tree.add_edge(node, query_node)
         marginal_tree.separators[(node, query_node)] = [phi]
@@ -143,3 +145,78 @@ class MarginalTreeInference(Inference):
         variables = query
         if evidence:
             variables.extend(list(evidence))
+
+    def partial_one_way_propagation(self, marginal_tree):
+        propagation = marginal_tree.propagation_to_node(marginal_tree.root)
+        # Check if the message was alread created in each separator
+        for separator in propagation:
+            separators_copy = marginal_tree.separators.copy()
+            if (separator not in separators_copy):
+                self._absorption(marginal_tree, separator[1], separator[0])
+
+    def _find_relevant_potentials(self, factors, separator):
+
+        def _add_dconnected_factors(factors, R_s):
+            for factor in factors:
+                reachable = []
+                for var in separator:
+                    reachable.extend(self.model.active_trail_nodes(
+                        var, list(self.observed)))
+                if len(set(factor.scope()).intersection(
+                   set(reachable))) != 0:
+                    R_s.append(factor)
+
+        def _remove_unity_factors(separator, R_s):
+
+            def _var_appears_only_once(var, factors):
+                appears = False
+                for f in factors:
+                    if var in f.scope():
+                        if appears:
+                            return False
+                        appears = True
+                return True
+
+            # Recursively remove barren tables
+            while True:
+                set_before_changes = R_s.copy()
+                for factor in R_s:
+                    for var in factor.left_hand_side:
+                        if _var_appears_only_once(var, R_s
+                                                  ) and (var not in separator):
+                            R_s.remove(factor)
+                            break
+                        else:
+                            break
+                if len(set_before_changes) == len(R_s):
+                    break
+
+        if isinstance(separator, str):
+            separator = [separator]
+        R_s = []
+        # Find relevant potentials by keeping the oned
+        _add_dconnected_factors(factors, R_s)
+        _remove_unity_factors(separator, R_s)
+        return R_s
+
+    def _absorption(self, marginal_tree, c_i, c_j):
+            """
+            Send a message from c_j to c_i during propagation.
+            """
+            # Union of all factors in c_j and its separators' factors
+            neighbors = marginal_tree.neighbors(c_j)
+            if c_i in neighbors:
+                neighbors.remove(c_i)
+            R_s = []
+            for neighbor in neighbors:
+                if (neighbor, c_j) in marginal_tree.separators:
+                    R_s.extend(marginal_tree.separators[(neighbor, c_j)])
+            R_s.extend(marginal_tree.factor_node_assignment[c_j])
+            separator = frozenset(c_i).intersection(frozenset(c_j))
+            # Variables to marginalize from R_s
+            marginalize = list(set(c_j) - set(separator))
+            R_s = self._find_relevant_potentials(R_s, separator)
+            R_s = Inference.sum_out(marginalize, R_s)
+            # Associate the messages with the separator of c_i and c_j,
+            # in the right direction (from c_j to c_i)
+            marginal_tree.separators[(c_j, c_i)] = R_s
