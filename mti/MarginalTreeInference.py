@@ -21,6 +21,8 @@ class MarginalTreeInference(Inference):
         self.root = ()
         self.evidence = {}
         self.observed = []
+        # All marginal trees are saved
+        self.marginal_trees = []
 
     def _build(self, variables, evidence=None, elimination_order=None):
         if not isinstance(variables, list):
@@ -76,12 +78,15 @@ class MarginalTreeInference(Inference):
         marginal_tree = MarginalTree()
         eliminated_variables = set()
         messages = []
+        # Variables to keep the last "phi" message and last created "node"
+        phi = None
+        node = None
         for var in elimination_order:
             # Removing all the factors containing the variables which are
             # eliminated (as all the factors should be considered only once)
             factors = [factor for factor in working_factors[var]
                        if not set(factor.variables).intersection(
-                        eliminated_variables)]
+                eliminated_variables)]
             phi = factor_product(*factors)
             phi = phi.marginalize(var, inplace=False)
             del working_factors[var]
@@ -96,42 +101,45 @@ class MarginalTreeInference(Inference):
                 node = node.union(f.scope())
             node = tuple(node)
             marginal_tree.add_node(node)
-            for f in factors:
-                # Add factors to MT
-                marginal_tree.factors.append(f)
-                if node in marginal_tree.factor_node_assignment:
-                    marginal_tree.factor_node_assignment[
-                        node].append(f.scope())
-                else:
-                    marginal_tree.factor_node_assignment[
-                        node] = f.scope()
+            marginal_tree.add_factors_to_node(factors, node)
             # Connect nodes
             messages_intersection = set(factors).intersection(set(messages))
             messages_used = []
-            print(">>> Messages used here in this factor:")
             for m in list(messages_intersection):
-                for edge in marginal_tree.separators:
-                    print("=========> Check if in separator")
-                    print(m)
-                    print(marginal_tree.separators[edge])
+                for edge in marginal_tree.separators.copy():
                     if m in marginal_tree.separators[edge]:
-                        print(">>> HERE")
+                        marginal_tree.add_edge(edge[0], node)
                         new_edge = (edge[0], node)
-                        marginal_tree.separators[new_edge] = m
-                        marginal_tree.separators[edge].remove(m)
+                        marginal_tree.add_messages_to_separator(m, new_edge)
+                        del marginal_tree.separators[edge]
                         messages_used.append(m)
-            messages_remaining = messages_intersection - set(messages_used)
-            print(">>> Remaining factors:")
-            print(messages_remaining)
-            marginal_tree.separators[(node,)] = []
-            for m in list(messages_remaining):
-                marginal_tree.separators[(node,)].append(m)
-
-        ### DEBUG
-        print(">>> Separators")
-        print(marginal_tree.separators)
-        ### -- DEBUG
+            # If message wasn't used to create the new message,
+            # point it to the "empty node".
+            if phi not in messages_used:
+                marginal_tree.add_messages_to_separator(phi, (node,))
+        query_node = tuple(phi.variables)
+        marginal_tree.add_node(query_node)
+        remaining_factors = []
+        for var in working_factors:
+            remaining_factors.extend([factor for factor in working_factors[var]
+                                      if (not set(
+                                          factor.variables
+                                          ).intersection(
+                                          eliminated_variables)
+                                          ) and var in factor.left_hand_side])
+        # Adding the query node and the last message to it.
+        marginal_tree.add_edge(node, query_node)
+        marginal_tree.separators[(node, query_node)] = [phi]
+        marginal_tree.add_factors_to_node(remaining_factors, query_node)
+        # Define the root node as the query node.
+        marginal_tree.root = query_node
         return marginal_tree
 
-    def propagate(self, query, evidence=None):
-        self._build(query, evidence)
+    def propagate(self, query, evidence=None, elimination_order=None):
+        new_mt = self._build(query, evidence)
+        self.marginal_trees.append(new_mt)
+
+    def query(self, query, evidence=None, elimination_order=None):
+        variables = query
+        if evidence:
+            variables.extend(list(evidence))
