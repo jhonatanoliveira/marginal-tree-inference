@@ -1,5 +1,6 @@
 from pgmpy.models import JunctionTree
 import networkx as nx
+from copy import deepcopy
 
 
 class MarginalTree(JunctionTree):
@@ -8,15 +9,54 @@ class MarginalTree(JunctionTree):
         super().__init__()
         self.separators = {}
         self.root = None
+        self.evidence = {}
+        self.observed = []
+
+    def set_evidence(self, evidence):
+        # Set internal variables
+        for k in evidence:
+            self.evidence[k] = evidence[k]
+        self.observed.extend(list(evidence.keys()))
+        # Reduce the factors and modify graph
+        for evidence_var in evidence:
+            # reduce factors
+            for factor in self.factors:
+                if evidence_var in factor.variables:
+                    factor.reduce(
+                        '{evidence_var}_{state}'
+                        .format(evidence_var=evidence_var,
+                                state=evidence[evidence_var]),
+                        inplace=True)
+            # update nodes and edges
+            for n in self.nodes():
+                if evidence_var in n:
+                    new_n = tuple(set(n) - set([evidence_var]))
+                    neighbors = nx.neighbors(self, n)
+                    for neighbor in neighbors:
+                        if (n, neighbor) in self.edges():
+                            self.remove_edge(n, neighbor)
+                            self.add_edge(new_n, neighbor)
+                        if (neighbor, n) in self.edges():
+                            self.remove_edge(neighbor, n)
+                            self.add_edge(neighbor, new_n)
+                    self.remove_node(n)
+                    self.add_node(new_n)
+                    # Update the separators
+                    for edge in self.separators:
+                        if n in edge:
+                            edge_l = list(edge)
+                            edge_l[edge_l.index(n)] = new_n
+                            self.separators[tuple(edge_l)] = self.separators[
+                                edge]
+                            del self.separators[
+                                edge]
+                    # Update assigned factors
+                    self.factor_node_assignment[
+                        new_n] = self.factor_node_assignment[n]
+                    del self.factor_node_assignment[n]
 
     def copy(self):
-        mt = MarginalTree()
-        mt.add_nodes_from(self.nodes())
-        mt.add_edges_from(self.edges())
-        mt.factors = self.factors.copy()
-        mt.factor_node_assignment = self.factor_node_assignment.copy()
-        mt.separators = self.separators.copy()
-        return mt
+        return deepcopy(self)
 
     def add_factors_to_node(self, factors, node):
         if not isinstance(factors, list):

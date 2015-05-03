@@ -2,12 +2,11 @@ from pgmpy.models import JunctionTree
 from pgmpy.models import BayesianModel
 from pgmpy.factors.Factor import factor_product
 from pgmpy.inference import Inference
-from pgmpy.inference import LazyPropagation
 from pgmpy.inference import EliminationOrdering
 from mti.MarginalTree import MarginalTree
 
 
-class MarginalTreeInference(LazyPropagation):
+class MarginalTreeInference(Inference):
 
     def __init__(self, model):
         super().__init__(model)
@@ -15,15 +14,77 @@ class MarginalTreeInference(LazyPropagation):
         if not isinstance(model, JunctionTree):
             self.junction_tree = model.to_junction_tree(False)
         else:
-            self.model = model
             self.junction_tree = model
+        self.model = model
         self.clique_beliefs = {}
         self.sepset_beliefs = {}
         self.root = ()
-        self.evidence = {}
         self.observed = []
         # All marginal trees are saved
         self.marginal_trees = []
+
+    def find_reusable(self, query, evidence=None):
+        if not isinstance(query, list):
+            query = [query]
+        reusable = []
+        for saved_mt in self.marginal_trees:
+            if set(saved_mt.evidence).issubset(set(evidence)) or set(
+                    saved_mt.evidence) == set(evidence):
+                if all(saved_mt.evidence[k] == evidence[k]
+                        for k in saved_mt.evidence):
+                    reusable.append(saved_mt)
+        return reusable
+
+    def propagate(self, query, evidence=None, elimination_order=None):
+        new_mt = self._build(query, evidence)
+        self.marginal_trees.append(new_mt)
+
+    def query(self, query, evidence=None, elimination_order=None):
+        if not isinstance(query, list):
+            query = [query]
+        # See if it is possible to reuse saved MTs
+        marginal_tree = None
+        reuse_mts = self.find_reusable(query, evidence)
+        if len(reuse_mts) > 0:
+            # TODO: choose MT by the size of it
+            # Choose one MT and rebuild it for the new query and evidence
+            marginal_tree = reuse_mts[0]
+            # Reduce new evidences
+            new_evidence = {k: evidence[k]
+                            for k in evidence
+                            if k not in marginal_tree.evidence}
+            marginal_tree.set_evidence(new_evidence)
+            # Rebuild MT to answer new query
+            marginal_tree = marginal_tree.rebuild(query + list(evidence))
+            # Perform one way propagation
+            self.partial_one_way_propagation(marginal_tree)
+        else:
+            marginal_tree = self._build(query, evidence, elimination_order)
+            self.marginal_trees.append(marginal_tree)
+        # Save the new MT
+        self.marginal_trees.append(marginal_tree)
+        # Answer the query
+        node = marginal_tree.root
+        # Define the variables to marginalize
+        marginalize = set(node) - set(query)
+        # Collect factors for the node
+        neighbors = marginal_tree.neighbors(node)
+        factors = []
+        # Collect incoming messages
+        for neighbor in neighbors:
+            # separator_neighbor = frozenset(node).intersection(
+            #                       frozenset(neighbor))
+            if (neighbor, node) in marginal_tree.separators:
+                factors.extend(marginal_tree.separators[(neighbor, node)])
+        # Collect assigned Factors
+        factors.extend(marginal_tree.factor_node_assignment[node])
+        # Sum out variables from factors
+        result = Inference.sum_out(marginalize, factors)
+        # Multiply all remaining CPDs
+        result = factor_product(*result)
+        # Normalize
+        result.normalize()
+        return result
 
     def _build(self, variables, evidence=None, elimination_order=None):
         if not isinstance(variables, list):
@@ -38,7 +99,7 @@ class MarginalTreeInference(LazyPropagation):
         working_factors = {node: {factor for factor in factors_copy[node]}
                            for node in factors_copy}
 
-        # Dealing with evidence. Reducing factors over it before VE is run.
+        # Reduce working factors
         if evidence:
             for evidence_var in evidence:
                 for factor in working_factors[evidence_var].copy():
@@ -94,6 +155,7 @@ class MarginalTreeInference(LazyPropagation):
             for variable in phi.variables:
                 working_factors[variable].add(phi)
             eliminated_variables.add(var)
+
             # Save new message
             messages.append(phi)
             # Build a Marginal Tree node
@@ -104,7 +166,7 @@ class MarginalTreeInference(LazyPropagation):
             marginal_tree.add_node(node)
             messages_intersection = set(factors).intersection(set(messages))
             marginal_tree.add_factors_to_node(
-                list(set(factors)-messages_intersection), node)
+                list(set(factors) - messages_intersection), node)
             # Connect nodes
             messages_used = []
             for m in list(messages_intersection):
@@ -124,27 +186,24 @@ class MarginalTreeInference(LazyPropagation):
         remaining_factors = []
         for var in working_factors:
             remaining_factors.extend([factor for factor in working_factors[var]
-                                      if (not set(
-                                          factor.variables
-                                      ).intersection(
-                                          eliminated_variables)
-            ) and var in factor.left_hand_side])
+                                      if ((not set(
+                                          factor.variables).intersection(
+                                          eliminated_variables))
+                                          and (var in factor.left_hand_side)
+                                          and (factor not in messages))
+                                      ]
+                                     )
         # Adding the query node and the last message to it.
         marginal_tree.add_edge(node, query_node)
         marginal_tree.separators[(node, query_node)] = [phi]
         marginal_tree.add_factors_to_node(remaining_factors, query_node)
         # Define the root node as the query node.
         marginal_tree.root = query_node
+        # Update evidence variables of the Marginal tree
+        for k in evidence:
+            marginal_tree.evidence[k] = evidence[k]
+        marginal_tree.observed.extend(list(evidence.keys()))
         return marginal_tree
-
-    def propagate(self, query, evidence=None, elimination_order=None):
-        new_mt = self._build(query, evidence)
-        self.marginal_trees.append(new_mt)
-
-    def query(self, query, evidence=None, elimination_order=None):
-        variables = query
-        if evidence:
-            variables.extend(list(evidence))
 
     def partial_one_way_propagation(self, marginal_tree):
         propagation = marginal_tree.propagation_to_node(marginal_tree.root)
@@ -153,15 +212,16 @@ class MarginalTreeInference(LazyPropagation):
             separators_copy = marginal_tree.separators.copy()
             if (separator not in separators_copy):
                 self._absorption(marginal_tree, separator[1], separator[0])
+        return marginal_tree
 
-    def _find_relevant_potentials(self, factors, separator):
+    def _find_relevant_potentials(self, factors, separator, marginal_tree):
 
         def _add_dconnected_factors(factors, R_s):
             for factor in factors:
                 reachable = []
                 for var in separator:
                     reachable.extend(self.model.active_trail_nodes(
-                        var, list(self.observed)))
+                        var, list(marginal_tree.observed)))
                 if len(set(factor.scope()).intersection(
                    set(reachable))) != 0:
                     R_s.append(factor)
@@ -200,23 +260,23 @@ class MarginalTreeInference(LazyPropagation):
         return R_s
 
     def _absorption(self, marginal_tree, c_i, c_j):
-            """
-            Send a message from c_j to c_i during propagation.
-            """
-            # Union of all factors in c_j and its separators' factors
-            neighbors = marginal_tree.neighbors(c_j)
-            if c_i in neighbors:
-                neighbors.remove(c_i)
-            R_s = []
-            for neighbor in neighbors:
-                if (neighbor, c_j) in marginal_tree.separators:
-                    R_s.extend(marginal_tree.separators[(neighbor, c_j)])
-            R_s.extend(marginal_tree.factor_node_assignment[c_j])
-            separator = frozenset(c_i).intersection(frozenset(c_j))
-            # Variables to marginalize from R_s
-            marginalize = list(set(c_j) - set(separator))
-            R_s = self._find_relevant_potentials(R_s, separator)
-            R_s = Inference.sum_out(marginalize, R_s)
-            # Associate the messages with the separator of c_i and c_j,
-            # in the right direction (from c_j to c_i)
-            marginal_tree.separators[(c_j, c_i)] = R_s
+        """
+        Send a message from c_j to c_i during propagation.
+        """
+        # Union of all factors in c_j and its separators' factors
+        neighbors = marginal_tree.neighbors(c_j)
+        if c_i in neighbors:
+            neighbors.remove(c_i)
+        R_s = []
+        for neighbor in neighbors:
+            if (neighbor, c_j) in marginal_tree.separators:
+                R_s.extend(marginal_tree.separators[(neighbor, c_j)])
+        R_s.extend(marginal_tree.factor_node_assignment[c_j])
+        separator = frozenset(c_i).intersection(frozenset(c_j))
+        # Variables to marginalize from R_s
+        marginalize = list(set(c_j) - set(separator))
+        R_s = self._find_relevant_potentials(R_s, separator, marginal_tree)
+        R_s = Inference.sum_out(marginalize, R_s)
+        # Associate the messages with the separator of c_i and c_j,
+        # in the right direction (from c_j to c_i)
+        marginal_tree.separators[(c_j, c_i)] = R_s
