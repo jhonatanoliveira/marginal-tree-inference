@@ -123,6 +123,9 @@ class MarginalTree(JunctionTree):
     def selective_reduction(self, marked_variables):
         if not isinstance(marked_variables, list):
             marked_variables = [marked_variables]
+        ### DEBUG
+        # print(">> SRA for %s" % marked_variables)
+        ### --- DEBUG
         nodes = self.nodes()
         original_nodes = self.nodes()
         old_nodes = self.nodes()
@@ -139,6 +142,9 @@ class MarginalTree(JunctionTree):
                         else:
                             appears_more.append(var)
             appears_once = list(set(checked_vars)-set(appears_more))
+            ### DEBUG
+            # print(">> SRA appears once %s" % appears_once)
+            ### --- DEBUG
             # Delete var from node
             for var in appears_once:
                 node = list(filter(lambda x: var in x, nodes))
@@ -148,12 +154,18 @@ class MarginalTree(JunctionTree):
                 mod_node.remove(var)
                 new_node = tuple(mod_node)
                 nodes[nodes.index(node)] = new_node
-            # Remove nodes that are subsets of other ones.
-            for idx, n1 in enumerate(nodes.copy()):
-                for n2 in nodes.copy():
-                    if n1 != n2:
-                        if set(n1).issubset(set(n2)):
-                            nodes[idx] = ()
+            ### DEBUG
+            # print(">> SRA after remove nor marked %s" % nodes)
+            ### --- DEBUG
+            # Remove nodes that are subsets or equals to other ones.
+            for idx1, n1 in enumerate(nodes.copy()):
+                for idx2, n2 in enumerate(nodes.copy()):
+                    if idx1 != idx2:
+                        if set(n1).issubset(set(n2)) or set(n1) == set(n2):
+                            nodes[idx1] = ()
+            ### DEBUG
+            # print(">> SRA after remove subsets %s" % nodes)
+            ### --- DEBUG
             # Check if continue the loop
             if set(nodes) == set(old_nodes):
                 break
