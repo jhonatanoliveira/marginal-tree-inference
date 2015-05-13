@@ -42,7 +42,7 @@ class MarginalTree(JunctionTree):
                     self.remove_node(n)
                     self.add_node(new_n)
                     # Update the separators
-                    for edge in self.separators:
+                    for edge in self.separators.copy():
                         if n in edge:
                             edge_l = list(edge)
                             edge_l[edge_l.index(n)] = new_n
