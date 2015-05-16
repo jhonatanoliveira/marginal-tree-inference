@@ -42,9 +42,20 @@ class MarginalTreeInference(Inference):
     def query(self, query, evidence=None, elimination_order=None):
         if not isinstance(query, list):
             query = [query]
+        ### DEBUG
+        # print(">>> Saved MTs:")
+        # for mt in self.marginal_trees:
+        #     print("--> Nodes: %s" % mt.nodes())
+        ### --- DEBUG
         # See if it is possible to reuse saved MTs
         marginal_tree = None
         reuse_mts = self.find_reusable(query, evidence)
+        ### DEBUG
+        # print(">>> Reused MTs:")
+        # for mt in reuse_mts:
+        #     print("--> Nodes: %s" % mt.nodes())
+        ### --- DEBUG
+        factors = []
         if len(reuse_mts) > 0:
             # TODO: choose MT by the size of it
             # Choose one MT and rebuild it for the new query and evidence
@@ -52,15 +63,25 @@ class MarginalTreeInference(Inference):
             ### DEBUG
             # print(">>> Nodes before evidence")
             # print(marginal_tree.nodes())
+            # print(">>> Messages before evidence")
+            # for s in marginal_tree.separators:
+            #     print("--> Separator %s" % s.__str__())
+            #     for f in marginal_tree.separators[s]:
+            #         print(f)
             ### --- DEBUG
             # Reduce new evidences
             new_evidence = {k: evidence[k]
                             for k in evidence
                             if k not in marginal_tree.evidence}
             marginal_tree.set_evidence(new_evidence)
-            ### DEBUg
+            ### DEBUG
             # print(">>> Nodes after evidence")
             # print(marginal_tree.nodes())
+            # print(">>> Messages before evidence")
+            # for s in marginal_tree.separators:
+            #     print("--> Separator %s" % s.__str__())
+            #     for f in marginal_tree.separators[s]:
+            #         print(f)
             ### --- DEBUG
             # Rebuild MT to answer new query
             marginal_tree = marginal_tree.rebuild(query + list(evidence))
@@ -69,6 +90,10 @@ class MarginalTreeInference(Inference):
         else:
             marginal_tree = self._build(query, evidence, elimination_order)
             self.marginal_trees.append(marginal_tree)
+        ### DEBUG
+        # print(">>> Saving marginal tree")
+        # print(marginal_tree.nodes())
+        ### --- DEBUG
         # Save the new MT
         self.marginal_trees.append(marginal_tree)
         ### DEBUG
@@ -80,11 +105,8 @@ class MarginalTreeInference(Inference):
         marginalize = set(node) - set(query)
         # Collect factors for the node
         neighbors = marginal_tree.neighbors(node)
-        factors = []
         # Collect incoming messages
         for neighbor in neighbors:
-            # separator_neighbor = frozenset(node).intersection(
-            #                       frozenset(neighbor))
             if (neighbor, node) in marginal_tree.separators:
                 factors.extend(marginal_tree.separators[(neighbor, node)])
         ### DEBUG
@@ -245,12 +267,24 @@ class MarginalTreeInference(Inference):
         #     print("===> var %s" % var)
         #     for f in working_factors[var]:
         #         print(f)
+        # print(">>> Last message")
+        # print(phi.variables)
         ### --- DEBUG
+        # If var was eliminated, thus no message created
+        if not phi.variables:
+            used_factors = []
+            for var in working_factors:
+                for factor in working_factors[var]:
+                    if factor not in used_factors:
+                        used_factors.append(factor)
+            phi = factor_product(*used_factors)
         # Create the query node (where the query is answered)
         query_node = tuple(phi.variables)
         marginal_tree.add_node(query_node)
 
         ### DEBUG
+        # print(">>> Query node")
+        # print(query_node)
         # print(">>> All Remaining Factors")
         # for var in working_factors:
         #     print(">>> All Remaining for var %s" % var)
@@ -308,7 +342,15 @@ class MarginalTreeInference(Inference):
         return marginal_tree
 
     def partial_one_way_propagation(self, marginal_tree):
+        ### DEBUG
+        # print(">>> Ready to propagate in nodes:")
+        # print(marginal_tree.nodes())
+        # print(">>> To root:")
+        # print(marginal_tree.root)
+        # marginal_tree.draw()
+        ### --- DEBUG
         propagation = marginal_tree.propagation_to_node(marginal_tree.root)
+
         # Check if the message was already created in each separator
         for separator in propagation:
             separators_copy = marginal_tree.separators.copy()

@@ -44,6 +44,15 @@ class MarginalTree(JunctionTree):
                     # Update the separators
                     for edge in self.separators.copy():
                         if n in edge:
+                            # reduce the factor messages
+                            for message in self.separators[edge]:
+                                if evidence_var in message.variables:
+                                    message.reduce(
+                                        '{evidence_var}_{state}'
+                                        .format(evidence_var=evidence_var,
+                                                state=evidence[evidence_var]),
+                                        inplace=True)
+                            # update nodes name
                             edge_l = list(edge)
                             edge_l[edge_l.index(n)] = new_n
                             self.separators[tuple(edge_l)] = self.separators[
@@ -125,6 +134,7 @@ class MarginalTree(JunctionTree):
             marked_variables = [marked_variables]
         ### DEBUG
         # print(">> SRA for %s" % marked_variables)
+        # print(">> Nodes: %s" % self.nodes().__str__())
         ### --- DEBUG
         nodes = self.nodes()
         original_nodes = self.nodes()
