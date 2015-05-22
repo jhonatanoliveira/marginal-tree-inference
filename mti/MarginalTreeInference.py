@@ -37,23 +37,27 @@ class MarginalTreeInference(Inference):
 
     def propagate(self, query, evidence=None, elimination_order=None):
         new_mt = self._build(query, evidence)
-        self.marginal_trees.append(new_mt)
 
     def query(self, query, evidence=None, elimination_order=None):
         if not isinstance(query, list):
             query = [query]
         ### DEBUG
+        # print(">>>>>--------------------------------------<<<<<<")
+        # print(">>> Query: %s" % query)
+        # print(">>> Evidence: %s" % evidence)
         # print(">>> Saved MTs:")
         # for mt in self.marginal_trees:
         #     print("--> Nodes: %s" % mt.nodes())
+        #     print(mt.evidence)
         ### --- DEBUG
         # See if it is possible to reuse saved MTs
         marginal_tree = None
         reuse_mts = self.find_reusable(query, evidence)
         ### DEBUG
-        # print(">>> Reused MTs:")
+        # print(">>> Reusable MTs:")
         # for mt in reuse_mts:
         #     print("--> Nodes: %s" % mt.nodes())
+        #     print(mt.evidence)
         ### --- DEBUG
         factors = []
         if len(reuse_mts) > 0:
@@ -84,21 +88,18 @@ class MarginalTreeInference(Inference):
             #         print(f)
             ### --- DEBUG
             # Rebuild MT to answer new query
-            marginal_tree = marginal_tree.rebuild(query + list(evidence))
+            marginal_tree = marginal_tree.rebuild(query, evidence)
             # Perform one way propagation
             self.partial_one_way_propagation(marginal_tree)
         else:
             marginal_tree = self._build(query, evidence, elimination_order)
-            self.marginal_trees.append(marginal_tree)
         ### DEBUG
         # print(">>> Saving marginal tree")
         # print(marginal_tree.nodes())
+        # print(marginal_tree.evidence)
         ### --- DEBUG
         # Save the new MT
         self.marginal_trees.append(marginal_tree)
-        ### DEBUG
-        # marginal_tree.draw()
-        ### --- DEBUG
         # Answer the query
         node = marginal_tree.root
         # Define the variables to marginalize
@@ -108,41 +109,48 @@ class MarginalTreeInference(Inference):
         # Collect incoming messages
         for neighbor in neighbors:
             if (neighbor, node) in marginal_tree.separators:
-                factors.extend(marginal_tree.separators[(neighbor, node)])
+                factors.extend([f for f in marginal_tree.separators[(neighbor, node)]
+                                if len(f.variables) > 0])
         ### DEBUG
-        # print(">>>>>--------------")
         # print(">>> Root: %s" % marginal_tree.root.__str__())
         # print("incoming...")
         # for f in factors:
         #     print(f)
         ### --- DEBUG
         # Collect assigned Factors
-        factors.extend(marginal_tree.factor_node_assignment[node])
+        factors.extend([f for f in marginal_tree.factor_node_assignment[node]
+                        if len(f.variables) > 0])
         ### DEBUG
         # print("assigned...")
         # for f in marginal_tree.factor_node_assignment[node]:
         #     print(f)
+        # print("going to SUM OUT %s" % marginalize.__str__())
+        # for f in factors:
+        #     print(f)
         ### --- DEBUG
+        result = None
         # Sum out variables from factors
-        result = Inference.sum_out(marginalize, factors)
+        if len(factors) > 0:
+            result = Inference.sum_out(marginalize, factors)
         ### DEBUG
         # print(">>> After SUM OUT")
         # for f in result:
         #     print(f)
         ### --- DEBUG
         # Multiply all remaining CPDs
-        result = factor_product(*result)
-        ### DEBUG
-        # print(">>> After PRODUCT")
-        # print(result)
-        ### --- DEBUG
-        # Normalize
-        result.normalize()
-        ### DEBUG
-        # print(">>> After Normalize")
-        # print(result)
-        # marginal_tree.draw()
-        ### --- DEBUG
+        if len(result) > 0:
+            result = factor_product(*result)
+            ### DEBUG
+            # print(">>> After PRODUCT")
+            # print(result)
+            ### --- DEBUG
+            # Normalize
+            result.normalize()
+            ### DEBUG
+            # print(">>> After Normalize")
+            # print(result)
+            # marginal_tree.draw()
+            ### --- DEBUG
         return result
 
     def _build(self, variables, evidence=None, elimination_order=None):
@@ -364,8 +372,12 @@ class MarginalTreeInference(Inference):
             for factor in factors:
                 reachable = []
                 for var in separator:
-                    reachable.extend(self.model.active_trail_nodes(
-                        var, list(marginal_tree.observed)))
+                    # TODO: this "if" is a workaround, since "fake" nodes
+                    # were added in the JT, because of the absorption of evidence
+                    # which can cause duplicated nodes.
+                    if var in self.model.nodes():
+                        reachable.extend(self.model.active_trail_nodes(
+                            var, list(marginal_tree.observed)))
                 if len(set(factor.scope()).intersection(
                    set(reachable))) != 0:
                     R_s.append(factor)

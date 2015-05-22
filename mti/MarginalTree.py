@@ -17,6 +17,13 @@ class MarginalTree(JunctionTree):
         for k in evidence:
             self.evidence[k] = evidence[k]
         self.observed.extend(list(evidence.keys()))
+        ### DEBUG
+        # print("++++++> Nodes BEFORE modifying: %s" % self.nodes().__str__())
+        # empty_nodes = [n for n in self.nodes() if len(n) < 2]
+        # print("++++++> Empty nodes: %s" % empty_nodes.__str__())
+        # break_edges = [e for e in self.edges() if len(e) < 1]
+        # print("++++++> Break edges: %s" % break_edges.__str__())
+        ### DEBUG
         # Reduce the factors and modify graph
         for evidence_var in evidence:
             # reduce factors
@@ -27,20 +34,29 @@ class MarginalTree(JunctionTree):
                         .format(evidence_var=evidence_var,
                                 state=evidence[evidence_var]),
                         inplace=True)
+                    if len(factor.variables) == 0:
+                        self.factors.remove(factor)
             # update nodes and edges
             for n in self.nodes():
                 if evidence_var in n:
                     new_n = tuple(set(n) - set([evidence_var]))
+                    # prevent duplicated node
+                    while new_n in self.nodes():
+                        from random import randint
+                        new_n = tuple(list(new_n) + ['node_{i}'.format(i=randint(0,100))])
                     neighbors = nx.neighbors(self, n)
                     for neighbor in neighbors:
                         if (n, neighbor) in self.edges():
                             self.remove_edge(n, neighbor)
-                            self.add_edge(new_n, neighbor)
+                            if len(new_n) > 0:
+                                self.add_edge(new_n, neighbor)
                         if (neighbor, n) in self.edges():
                             self.remove_edge(neighbor, n)
-                            self.add_edge(neighbor, new_n)
+                            if len(new_n) > 0:
+                                self.add_edge(neighbor, new_n)
                     self.remove_node(n)
-                    self.add_node(new_n)
+                    if len(new_n) > 0:
+                        self.add_node(new_n)
                     # Update the separators
                     for edge in self.separators.copy():
                         if n in edge:
@@ -63,6 +79,13 @@ class MarginalTree(JunctionTree):
                     self.factor_node_assignment[
                         new_n] = self.factor_node_assignment[n]
                     del self.factor_node_assignment[n]
+        ### DEBUG
+        # print("++++++> Nodes AFTER modifying: %s" % self.nodes().__str__())
+        # empty_nodes = [n for n in self.nodes() if len(n) < 2]
+        # print("++++++> Empty nodes: %s" % empty_nodes.__str__())
+        # break_edges = [e for e in self.edges() if len(e) < 1]
+        # print("++++++> Break edges: %s" % break_edges.__str__())
+        ### DEBUG
 
     def copy(self):
         return deepcopy(self)
@@ -181,17 +204,20 @@ class MarginalTree(JunctionTree):
                 break
             else:
                 old_nodes = nodes.copy()
-        # Return the original node for the node outputted
-        # from SRA
-        idx_original_node = next(i
-                                 for i, j in enumerate(nodes)
-                                 if len(set(j)) != 0)
-        # TODO: return more than one node
-        return original_nodes[idx_original_node]
+        # Return the original node for the node outputted from SRA
+        idxs = [i for i, n in enumerate(nodes) if len(set(n)) != 0]
+        return [n for i, n in enumerate(original_nodes) if i in idxs]
 
-    def rebuild(self, variables):
+    def rebuild(self, query, evidence):
+        if not isinstance(query, list):
+            query = [query]
+        variables = query + list(evidence)
         new_mt = self.copy()
-        node = new_mt.selective_reduction(variables)
+        # TODO: select best node
+        possible_nodes = new_mt.selective_reduction(variables)
+        query_nodes = [n for n in possible_nodes
+                       if set(query).issubset(set(n))]
+        node = query_nodes[0]
         # TODO: make the lump of returned nodes
         new_mt.root = node
         return new_mt
